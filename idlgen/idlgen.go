@@ -330,13 +330,15 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
-// Program address
-var ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
+{{ $prefix := .IDL.Name | toPascalCase -}}
+
+// Program {{ $prefix }} address
+var {{ $prefix }}ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
 
 // --- Error Definitions ---
 {{- range .IDL.Errors }}
-// {{ .Name | toPascalCase }}Error represents program error {{ .Code }}: {{ .Message }}
-var {{ .Name | toPascalCase }}Error = errors.New("{{ .Message }}")
+// {{ $prefix }}{{ .Name | toPascalCase }}Error represents program error {{ .Code }}: {{ .Message }}
+var {{ $prefix }}{{ .Name | toPascalCase }}Error = errors.New("{{ .Message }}")
 {{- end }}
 
 {{ $root := . -}}
@@ -344,10 +346,16 @@ var {{ .Name | toPascalCase }}Error = errors.New("{{ .Message }}")
 // --- Struct Definitions ---
 {{- range .IDL.Types }}
 {{ $typeName := .Name | toPascalCase }}
-// {{ $typeName }} represents the {{ .Name }} type.
-type {{ $typeName }} struct {
+// {{ $prefix }}{{ $typeName }} represents the {{ .Name }} type.
+type {{ $prefix }}{{ $typeName }} struct {
 	{{- range .Type.Fields }}
-	{{ .Name | toPascalCase }} {{ mapType .Type }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
+	{{ $fieldName := .Name | toPascalCase }}
+	{{ $fieldType := mapType .Type -}}
+	{{- if .Type.Defined -}}
+		{{ $fieldName }} {{ $prefix }}{{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
+	{{- else -}}
+		{{ $fieldName }} {{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
+	{{- end -}}
 	{{- end }}
 }
 {{- end }}
@@ -357,8 +365,8 @@ type {{ $typeName }} struct {
 {{ $accountName := .Name }}
 {{ $typeName := .Name | toPascalCase }}
 
-// {{ $typeName }}Discriminator is the 8-byte discriminator for {{ .Name }} accounts.
-var {{ $typeName }}Discriminator = []byte{
+// {{ $prefix }}{{ $typeName }}Discriminator is the 8-byte discriminator for {{ .Name }} accounts.
+var {{ $prefix }}{{ $typeName }}Discriminator = []byte{
 {{- if .Discriminator }}
 {{ intSliceToBytesLiteral .Discriminator }},
 {{- else }}
@@ -366,29 +374,29 @@ var {{ $typeName }}Discriminator = []byte{
 {{- end }}
 }
 
-// Decode{{ $typeName }} deserializes account data into a {{ $typeName }} struct.
-func Decode{{ $typeName }}(data []byte) (*{{ $typeName }}, error) {
+// Decode{{ $prefix }}{{ $typeName }} deserializes account data into a {{ $prefix }}{{ $typeName }} struct.
+func Decode{{ $prefix }}{{ $typeName }}(data []byte) (*{{ $prefix }}{{ $typeName }}, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short for discriminator")
 	}
-	if !bytes.Equal(data[:8], {{ $typeName }}Discriminator) {
-		return nil, fmt.Errorf("invalid discriminator for {{ $typeName }}: got %v, want %v", data[:8], {{ $typeName }}Discriminator)
+	if !bytes.Equal(data[:8], {{ $prefix }}{{ $typeName }}Discriminator) {
+		return nil, fmt.Errorf("invalid discriminator for {{ $prefix }}{{ $typeName }}: got %v, want %v", data[:8], {{ $prefix }}{{ $typeName }}Discriminator)
 	}
-	var account {{ $typeName }}
+	var account {{ $prefix }}{{ $typeName }}
 	dec := bin.NewBorshDecoder(data[8:])
 	if err := dec.Decode(&account); err != nil {
-		return nil, fmt.Errorf("failed to decode {{ $typeName }}: %w", err)
+		return nil, fmt.Errorf("failed to decode {{ $prefix }}{{ $typeName }}: %w", err)
 	}
 	return &account, nil
 }
 
-// Serialize serializes the {{ $typeName }} into a byte slice.
-func (a *{{ $typeName }}) Serialize() ([]byte, error) {
+// Serialize serializes the {{ $prefix }}{{ $typeName }} into a byte slice.
+func (a *{{ $prefix }}{{ $typeName }}) Serialize() ([]byte, error) {
 	var buf bytes.Buffer
-	buf.Write({{ $typeName }}Discriminator)
+	buf.Write({{ $prefix }}{{ $typeName }}Discriminator)
 	enc := bin.NewBorshEncoder(&buf)
 	if err := enc.Encode(a); err != nil {
-		return nil, fmt.Errorf("failed to encode {{ $typeName }}: %w", err)
+		return nil, fmt.Errorf("failed to encode {{ $prefix }}{{ $typeName }}: %w", err)
 	}
 	return buf.Bytes(), nil
 }
@@ -397,31 +405,37 @@ func (a *{{ $typeName }}) Serialize() ([]byte, error) {
 // --- Instruction Builders ---
 {{- range .IDL.Instructions }}
 {{ $instrName := .Name | toPascalCase }}
-// {{ $instrName }}InstructionDiscriminator is the 8-byte discriminator for the "{{ .Name }}" instruction.
-var {{ $instrName }}InstructionDiscriminator = []byte{ {{ instructionDiscriminator .Name | bytesLiteral }} }
+// {{ $prefix }}{{ $instrName }}InstructionDiscriminator is the 8-byte discriminator for the "{{ .Name }}" instruction.
+var {{ $prefix }}{{ $instrName }}InstructionDiscriminator = []byte{ {{ instructionDiscriminator .Name | bytesLiteral }} }
 
-// {{ $instrName }}Args represents the arguments for the "{{ .Name }}" instruction.
-type {{ $instrName }}Args struct {
+// {{ $prefix }}{{ $instrName }}Args represents the arguments for the "{{ .Name }}" instruction.
+type {{ $prefix }}{{ $instrName }}Args struct {
 	{{- range .Args }}
-	{{ .Name | toPascalCase }} {{ mapType .Type }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
+	{{ $fieldName := .Name | toPascalCase }}
+	{{ $fieldType := mapType .Type -}}
+	{{- if .Type.Defined -}}
+		{{ $fieldName }} {{ $prefix }}{{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
+	{{- else -}}
+		{{ $fieldName }} {{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
+	{{- end -}}
 	{{- end }}
 }
 
-// {{ $instrName }}Accounts represents the accounts for the "{{ .Name }}" instruction.
-type {{ $instrName }}Accounts struct {
+// {{ $prefix }}{{ $instrName }}Accounts represents the accounts for the "{{ .Name }}" instruction.
+type {{ $prefix }}{{ $instrName }}Accounts struct {
 	{{- range .Accounts }}
 	{{ .Name | toPascalCase }} solana.PublicKey
 	{{- end }}
 }
 
-// New{{ $instrName }}Instruction creates a new "{{ .Name }}" instruction.
-func New{{ $instrName }}Instruction(
-	args {{ $instrName }}Args,
-	accounts {{ $instrName }}Accounts,
+// New{{ $prefix }}{{ $instrName }}Instruction creates a new "{{ .Name }}" instruction.
+func New{{ $prefix }}{{ $instrName }}Instruction(
+	args {{ $prefix }}{{ $instrName }}Args,
+	accounts {{ $prefix }}{{ $instrName }}Accounts,
 ) (solana.Instruction, error) {
 	// Serialize arguments.
 	var buf bytes.Buffer
-	buf.Write({{ $instrName }}InstructionDiscriminator)
+	buf.Write({{ $prefix }}{{ $instrName }}InstructionDiscriminator)
 	enc := bin.NewBorshEncoder(&buf)
 	if err := enc.Encode(args); err != nil {
 		return nil, fmt.Errorf("failed to encode instruction args: %w", err)
@@ -435,7 +449,7 @@ func New{{ $instrName }}Instruction(
 	}
 
 	instruction := solana.NewInstruction(
-		ProgramID,
+		{{ $prefix }}ProgramID,
 		accountMetas,
 		buf.Bytes(),
 	)
@@ -453,10 +467,10 @@ type {{ .ClientName }} struct {
 }
 
 // New{{ .ClientName }} creates a new client.
-func New{{ .ClientName }}(rpcEndpoint string) *{{ .ClientName }} {
+func New{{ .ClientName }}(rpcEndpoint string, programID solana.PublicKey) *{{ .ClientName }} {
 	return &{{ .ClientName }}{
 		Connection: rpc.New(rpcEndpoint),
-		ProgramID:  ProgramID,
+		ProgramID:  programID,
 	}
 }
 
@@ -468,11 +482,11 @@ func New{{ .ClientName }}(rpcEndpoint string) *{{ .ClientName }} {
 
 // {{ $methodName }} creates a transaction builder for the "{{ .Name }}" instruction.
 func (c *{{ $clientName }}) {{ $methodName }}(
-	args {{ $instrName }}Args,
-	accounts {{ $instrName }}Accounts,
+	args {{ $prefix }}{{ $instrName }}Args,
+	accounts {{ $prefix }}{{ $instrName }}Accounts,
 ) *solana.TransactionBuilder {
 	// Create the instruction.
-	instruction, err := New{{ $instrName }}Instruction(args, accounts)
+	instruction, err := New{{ $prefix }}{{ $instrName }}Instruction(args, accounts)
 	if err != nil {
 		// This should never happen if the args are correct.
 		panic(err)
