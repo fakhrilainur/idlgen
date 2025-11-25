@@ -17,8 +17,17 @@ func main() {
 	)
 	flag.Parse()
 
+	if *idlPath == "" || *outPath == "" {
+		flag.Usage()
+		return
+	}
+
 	err := idlgen.Generate(idlPath, outPath, pkgName, clientName, *verbose)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error generating bindings: %v", err)
+	}
+
+	if *verbose {
+		log.Println("Successfully generated bindings at:", *outPath)
 	}
 }
