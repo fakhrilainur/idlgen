@@ -8,13 +8,14 @@ import (
 	"go/format"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/template"
 )
 
 // --- IDL Data Structures ---
 
-// IDL represents the root structure of a Solana Program IDL (Interface Definition Language).
+// IDL represents the root structure of a Solana Program IDL.
 type IDL struct {
 	Version      string                 `json:"version"`
 	Name         string                 `json:"name"`
@@ -25,7 +26,7 @@ type IDL struct {
 	Errors       []IdlError             `json:"errors"`
 }
 
-// IdlInstruction represents a specific instruction definition within the program.
+// IdlInstruction represents a specific instruction definition.
 type IdlInstruction struct {
 	Name          string       `json:"name"`
 	Docs          []string     `json:"docs"`
@@ -34,13 +35,13 @@ type IdlInstruction struct {
 	Accounts      []IdlAccount `json:"accounts"`
 }
 
-// IdlAccountDefinition represents the definition of an account structure.
+// IdlAccountDefinition represents the definition of an account (mainly for discriminators).
 type IdlAccountDefinition struct {
 	Name          string `json:"name"`
 	Discriminator []int  `json:"discriminator"`
 }
 
-// IdlTypeDefinition represents user-defined types, which can be structs or enums.
+// IdlTypeDefinition represents user-defined types (structs or enums).
 type IdlTypeDefinition struct {
 	Name string `json:"name"`
 	Type struct {
@@ -50,34 +51,31 @@ type IdlTypeDefinition struct {
 	} `json:"type"`
 }
 
-// IdlVariant represents a specific variant within an Enum definition.
+// IdlVariant represents a specific variant within an Enum.
 type IdlVariant struct {
 	Name   string         `json:"name"`
 	Fields []IdlEnumField `json:"fields,omitempty"`
 }
 
-// IdlEnumField represents a field within an Enum variant, supporting both named and unnamed fields.
+// IdlEnumField represents a field within an Enum variant.
 type IdlEnumField struct {
 	Name string
 	Type IdlType
 }
 
-// UnmarshalJSON handles custom deserialization for enum fields, supporting both named struct fields and tuple-style string types.
+// UnmarshalJSON handles custom deserialization for enum fields (named structs or tuple strings).
 func (ef *IdlEnumField) UnmarshalJSON(data []byte) error {
-	// Case 1: Primitive Type String (e.g., "bool", "u64") -> Tuple Enum
+	// Case 1: Primitive Type String
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
 		ef.Type = IdlType{Primitive: s}
 		return nil
 	}
-
 	// Case 2: Object
 	var m map[string]interface{}
 	if err := json.Unmarshal(data, &m); err != nil {
 		return err
 	}
-
-	// If it has "name" AND "type" properties, it is a Named Field (Struct Enum)
 	_, hasName := m["name"]
 	_, hasType := m["type"]
 	if hasName && hasType {
@@ -92,8 +90,6 @@ func (ef *IdlEnumField) UnmarshalJSON(data []byte) error {
 		ef.Type = f.Type
 		return nil
 	}
-
-	// If not (e.g., {"defined": "MyType"} or {"array": ...}), it is an Unnamed Field (Complex Tuple Enum)
 	var t IdlType
 	if err := json.Unmarshal(data, &t); err != nil {
 		return err
@@ -108,21 +104,21 @@ type IdlField struct {
 	Type IdlType `json:"type"`
 }
 
-// IdlAccount represents an account used in an instruction, including its mutability and signer status.
+// IdlAccount represents an account used in an instruction.
 type IdlAccount struct {
 	Name       string `json:"name"`
 	IsWritable bool   `json:"writable"`
 	IsSigner   bool   `json:"signer"`
 }
 
-// IdlError represents a custom error defined by the program.
+// IdlError represents a custom program error.
 type IdlError struct {
 	Code    int    `json:"code"`
 	Name    string `json:"name"`
 	Message string `json:"msg"`
 }
 
-// IdlType represents the various possible data types in the IDL, including primitives and complex types.
+// IdlType represents polymorphic data types.
 type IdlType struct {
 	Primitive string
 	Defined   *string
@@ -132,7 +128,7 @@ type IdlType struct {
 	Coption   *interface{}
 }
 
-// UnmarshalJSON handles custom deserialization for IDL types to support polymorphic type definitions.
+// UnmarshalJSON handles polymorphism for IDL types.
 func (t *IdlType) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
@@ -170,14 +166,14 @@ func (t *IdlType) UnmarshalJSON(data []byte) error {
 
 // --- Helper Functions ---
 
-// toPascalCase converts a snake_case or kebab-case string into PascalCase.
+// toPascalCase converts a string to PascalCase.
 func toPascalCase(s string) string {
 	s = strings.ReplaceAll(s, "_", " ")
 	s = strings.Title(s)
 	return strings.ReplaceAll(s, " ", "")
 }
 
-// intSliceToBytesLiteral converts a slice of integers into a Go byte slice literal string representation.
+// intSliceToBytesLiteral converts an int slice to a Go byte slice string.
 func intSliceToBytesLiteral(nums []int) string {
 	if len(nums) == 0 {
 		return ""
@@ -189,72 +185,15 @@ func intSliceToBytesLiteral(nums []int) string {
 	return strings.Join(parts, ", ")
 }
 
-// manualDiscriminator calculates an 8-byte discriminator based on the sha256 hash of a prefix and name.
+// manualDiscriminator generates a discriminator hash if none is provided.
 func manualDiscriminator(prefix, name string) string {
 	h := sha256.Sum256([]byte(prefix + ":" + name))
 	return intSliceToBytesLiteral([]int{int(h[0]), int(h[1]), int(h[2]), int(h[3]), int(h[4]), int(h[5]), int(h[6]), int(h[7])})
 }
 
-// mapType converts an IDL type definition into its corresponding Go type string representation.
-func mapType(t IdlType) string {
-	if t.Primitive != "" {
-		switch t.Primitive {
-		case "bool":
-			return "bool"
-		case "u8", "i8":
-			return "uint8"
-		case "u16":
-			return "uint16"
-		case "i16":
-			return "int16"
-		case "u32":
-			return "uint32"
-		case "i32":
-			return "int32"
-		case "u64":
-			return "uint64"
-		case "i64":
-			return "int64"
-		case "u128", "i128":
-			return "*big.Int"
-		case "bytes":
-			return "[]byte"
-		case "string":
-			return "string"
-		case "pubkey", "publicKey":
-			return "solana.PublicKey"
-		default:
-			return "interface{}"
-		}
-	}
-	if t.Defined != nil {
-		return toPascalCase(*t.Defined)
-	}
-	if t.Option != nil {
-		innerBytes, _ := json.Marshal(*t.Option)
-		var inner IdlType
-		_ = json.Unmarshal(innerBytes, &inner)
-		return "*" + mapType(inner)
-	}
-	if t.Vec != nil {
-		innerBytes, _ := json.Marshal(*t.Vec)
-		var inner IdlType
-		_ = json.Unmarshal(innerBytes, &inner)
-		return "[]" + mapType(inner)
-	}
-	if t.Array != nil {
-		innerBytes, _ := json.Marshal((*t.Array)[0])
-		var inner IdlType
-		_ = json.Unmarshal(innerBytes, &inner)
-		size := (*t.Array)[1]
-		return fmt.Sprintf("[%d]%s", int(size.(float64)), mapType(inner))
-	}
-	return "interface{}"
-}
-
 // --- Generator ---
 
-// Generate parses the provided IDL JSON file and generates a Go binding file using the specified configuration.
+// Generate processes the IDL and outputs the Go binding file.
 func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error {
 	if *idlPath == "" || *outPath == "" {
 		return fmt.Errorf("idl and out paths are required")
@@ -270,11 +209,79 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 		return fmt.Errorf("failed to parse IDL: %v", err)
 	}
 
-	if idl.Name == "" {
-		idl.Name = "program"
+	// 1. Determine Program Name / Prefix
+	// If IDL name is missing or generic, try to use the filename.
+	if idl.Name == "" || idl.Name == "program" {
+		fileName := filepath.Base(*idlPath)
+		ext := filepath.Ext(fileName)
+		idl.Name = strings.TrimSuffix(fileName, ext)
 	}
+
+	// Create the prefix (e.g., "orca_whirlpools" -> "OrcaWhirlpools")
+	prefix := toPascalCase(idl.Name)
+
 	if *clientName == "" {
-		*clientName = toPascalCase(idl.Name) + "Client"
+		*clientName = prefix + "Client"
+	}
+
+	// 2. Closure for mapType to access the prefix variable
+	// This ensures defined types (structs/enums) are referenced with the prefix.
+	var mapType func(t IdlType) string
+	mapType = func(t IdlType) string {
+		if t.Primitive != "" {
+			switch t.Primitive {
+			case "bool":
+				return "bool"
+			case "u8", "i8":
+				return "uint8"
+			case "u16":
+				return "uint16"
+			case "i16":
+				return "int16"
+			case "u32":
+				return "uint32"
+			case "i32":
+				return "int32"
+			case "u64":
+				return "uint64"
+			case "i64":
+				return "int64"
+			case "u128", "i128":
+				return "*big.Int"
+			case "bytes":
+				return "[]byte"
+			case "string":
+				return "string"
+			case "pubkey", "publicKey":
+				return "solana.PublicKey"
+			default:
+				return "interface{}"
+			}
+		}
+		if t.Defined != nil {
+			// Apply prefix to user-defined types
+			return prefix + toPascalCase(*t.Defined)
+		}
+		if t.Option != nil {
+			innerBytes, _ := json.Marshal(*t.Option)
+			var inner IdlType
+			_ = json.Unmarshal(innerBytes, &inner)
+			return "*" + mapType(inner)
+		}
+		if t.Vec != nil {
+			innerBytes, _ := json.Marshal(*t.Vec)
+			var inner IdlType
+			_ = json.Unmarshal(innerBytes, &inner)
+			return "[]" + mapType(inner)
+		}
+		if t.Array != nil {
+			innerBytes, _ := json.Marshal((*t.Array)[0])
+			var inner IdlType
+			_ = json.Unmarshal(innerBytes, &inner)
+			size := (*t.Array)[1]
+			return fmt.Sprintf("[%d]%s", int(size.(float64)), mapType(inner))
+		}
+		return "interface{}"
 	}
 
 	funcMap := template.FuncMap{
@@ -293,10 +300,12 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 	dataMap := struct {
 		PackageName string
 		ClientName  string
+		Prefix      string
 		IDL         IDL
 	}{
 		PackageName: *pkgName,
 		ClientName:  *clientName,
+		Prefix:      prefix,
 		IDL:         idl,
 	}
 
@@ -307,7 +316,6 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 	// Try formatting code
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
-		// If formatting fails, write the raw file for debugging
 		if verbose {
 			log.Printf("Warning: Code format failed: %v. Writing unformatted code.", err)
 		}
@@ -326,7 +334,6 @@ package {{ .PackageName }}
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -336,63 +343,69 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
-var ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
+// ProgramID is the public key of the program.
+var {{ $.Prefix }}ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
 
 // --- Errors ---
 {{- range .IDL.Errors }}
-var Err{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
+// Err{{ $.Prefix }}{{ .Name | toPascalCase }} represents the error {{ .Name }}.
+var Err{{ $.Prefix }}{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
 {{- end }}
 
 // --- Types ---
 {{- range .IDL.Types }}
 {{ $typeName := .Name | toPascalCase }}
 {{- if eq .Type.Kind "struct" }}
-type {{ $typeName }} struct {
+// {{ $.Prefix }}{{ $typeName }} represents the struct {{ .Name }}.
+type {{ $.Prefix }}{{ $typeName }} struct {
 	{{- range .Type.Fields }}
 	{{ .Name | toPascalCase }} {{ mapType .Type }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
 	{{- end }}
 }
 {{- else if eq .Type.Kind "enum" }}
-// Enum: {{ $typeName }}
-type {{ $typeName }} = bin.BorshEnum
+// Enum: {{ $.Prefix }}{{ $typeName }}
+type {{ $.Prefix }}{{ $typeName }} = bin.BorshEnum
 {{- end }}
 {{- end }}
 
 // --- Accounts ---
 {{- range .IDL.Accounts }}
 {{ $accName := .Name | toPascalCase }}
-var {{ $accName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "account" .Name }}{{ end }} }
+// {{ $.Prefix }}{{ $accName }}Discriminator is the discriminator for the account {{ .Name }}.
+var {{ $.Prefix }}{{ $accName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "account" .Name }}{{ end }} }
 
-type {{ $accName }} struct {
-	// Fields are typically defined in Types with the same name.
-	// Decoding logic should be implemented manually using the Type definition.
-}
+// Note: The struct definition for account "{{ .Name }}" is generated in the Types section 
+// if defined there to avoid redeclaration.
 {{- end }}
 
 // --- Instructions ---
 {{- range .IDL.Instructions }}
 {{ $instrName := .Name | toPascalCase }}
 
-var {{ $instrName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "global" .Name }}{{ end }} }
+// {{ $.Prefix }}{{ $instrName }}Discriminator is the discriminator for instruction {{ .Name }}.
+var {{ $.Prefix }}{{ $instrName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "global" .Name }}{{ end }} }
 
-type {{ $instrName }}Args struct {
+// {{ $.Prefix }}{{ $instrName }}Args represents the arguments for instruction {{ .Name }}.
+type {{ $.Prefix }}{{ $instrName }}Args struct {
 	{{- range .Args }}
 	{{ .Name | toPascalCase }} {{ mapType .Type }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
 	{{- end }}
 }
 
-type {{ $instrName }}Accounts struct {
+// {{ $.Prefix }}{{ $instrName }}Accounts represents the accounts for instruction {{ .Name }}.
+type {{ $.Prefix }}{{ $instrName }}Accounts struct {
 	{{- range .Accounts }}
 	{{ .Name | toPascalCase }} solana.PublicKey
 	{{- end }}
 }
 
-func New{{ $instrName }}Instruction(
-	args {{ $instrName }}Args,
-	accounts {{ $instrName }}Accounts,
-) *solana.Instruction {
+// New{{ $.Prefix }}{{ $instrName }}Instruction creates a new instruction for {{ .Name }}.
+func New{{ $.Prefix }}{{ $instrName }}Instruction(
+	args {{ $.Prefix }}{{ $instrName }}Args,
+	accounts {{ $.Prefix }}{{ $instrName }}Accounts,
+) solana.Instruction { // FIX: Return interface, NOT pointer to interface
 	buf := new(bytes.Buffer)
-	buf.Write({{ $instrName }}Discriminator)
+	buf.Write({{ $.Prefix }}{{ $instrName }}Discriminator)
 	encoder := bin.NewBorshEncoder(buf)
 	if err := encoder.Encode(args); err != nil {
 		panic(fmt.Errorf("failed to encode args: %w", err))
@@ -409,7 +422,7 @@ func New{{ $instrName }}Instruction(
 	}
 
 	return solana.NewInstruction(
-		ProgramID,
+		{{ $.Prefix }}ProgramID,
 		keys,
 		buf.Bytes(),
 	)
@@ -418,10 +431,12 @@ func New{{ $instrName }}Instruction(
 
 // --- Client ---
 
+// {{ .ClientName }} provides easy access to program instructions.
 type {{ .ClientName }} struct {
 	Rpc *rpc.Client
 }
 
+// New{{ .ClientName }} creates a new instance of the client.
 func New{{ .ClientName }}(endpoint string) *{{ .ClientName }} {
 	return &{{ .ClientName }}{
 		Rpc: rpc.New(endpoint),
