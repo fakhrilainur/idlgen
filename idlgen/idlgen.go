@@ -331,7 +331,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math/big"
 
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
@@ -343,8 +342,8 @@ var {{ .Prefix }}ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}"
 
 // --- Errors ---
 {{- range .IDL.Errors }}
-// {{ $.Prefix }}Err{{ .Name | toPascalCase }} represents the error {{ .Name }}.
-var {{ $.Prefix }}Err{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
+// Err{{ $.Prefix }}{{ .Name | toPascalCase }} represents the error {{ .Name }}.
+var Err{{ $.Prefix }}{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
 {{- end }}
 
 // --- Types ---
