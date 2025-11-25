@@ -209,23 +209,18 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 		return fmt.Errorf("failed to parse IDL: %v", err)
 	}
 
-	// 1. Determine Program Name / Prefix
-	// If IDL name is missing or generic, try to use the filename.
 	if idl.Name == "" || idl.Name == "program" {
 		fileName := filepath.Base(*idlPath)
 		ext := filepath.Ext(fileName)
 		idl.Name = strings.TrimSuffix(fileName, ext)
 	}
 
-	// Create the prefix (e.g., "orca_whirlpools" -> "OrcaWhirlpools")
 	prefix := toPascalCase(idl.Name)
 
 	if *clientName == "" {
 		*clientName = prefix + "Client"
 	}
 
-	// 2. Closure for mapType to access the prefix variable
-	// This ensures defined types (structs/enums) are referenced with the prefix.
 	var mapType func(t IdlType) string
 	mapType = func(t IdlType) string {
 		if t.Primitive != "" {
@@ -246,8 +241,10 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 				return "uint64"
 			case "i64":
 				return "int64"
-			case "u128", "i128":
-				return "*big.Int"
+			case "u128":
+				return "bin.Uint128"
+			case "i128":
+				return "bin.Int128"
 			case "bytes":
 				return "[]byte"
 			case "string":
@@ -259,7 +256,6 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 			}
 		}
 		if t.Defined != nil {
-			// Apply prefix to user-defined types
 			return prefix + toPascalCase(*t.Defined)
 		}
 		if t.Option != nil {
@@ -313,7 +309,6 @@ func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error
 		return err
 	}
 
-	// Try formatting code
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
 		if verbose {
@@ -344,12 +339,12 @@ import (
 )
 
 // ProgramID is the public key of the program.
-var {{ $.Prefix }}ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
+var {{ .Prefix }}ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
 
 // --- Errors ---
 {{- range .IDL.Errors }}
-// Err{{ $.Prefix }}{{ .Name | toPascalCase }} represents the error {{ .Name }}.
-var Err{{ $.Prefix }}{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
+// {{ $.Prefix }}Err{{ .Name | toPascalCase }} represents the error {{ .Name }}.
+var {{ $.Prefix }}Err{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
 {{- end }}
 
 // --- Types ---
@@ -374,8 +369,7 @@ type {{ $.Prefix }}{{ $typeName }} = bin.BorshEnum
 // {{ $.Prefix }}{{ $accName }}Discriminator is the discriminator for the account {{ .Name }}.
 var {{ $.Prefix }}{{ $accName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "account" .Name }}{{ end }} }
 
-// Note: The struct definition for account "{{ .Name }}" is generated in the Types section 
-// if defined there to avoid redeclaration.
+// Note: The struct definition for account "{{ .Name }}" is generated in the Types section.
 {{- end }}
 
 // --- Instructions ---
@@ -403,7 +397,7 @@ type {{ $.Prefix }}{{ $instrName }}Accounts struct {
 func New{{ $.Prefix }}{{ $instrName }}Instruction(
 	args {{ $.Prefix }}{{ $instrName }}Args,
 	accounts {{ $.Prefix }}{{ $instrName }}Accounts,
-) solana.Instruction { // FIX: Return interface, NOT pointer to interface
+) solana.Instruction {
 	buf := new(bytes.Buffer)
 	buf.Write({{ $.Prefix }}{{ $instrName }}Discriminator)
 	encoder := bin.NewBorshEncoder(buf)
