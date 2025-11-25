@@ -8,89 +8,131 @@ import (
 	"go/format"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/template"
-	"unicode"
 )
 
-// IDL represents the complete structure of a Solana IDL JSON file.
+// --- IDL Data Structures ---
+
+// IDL represents the root structure of a Solana Program IDL (Interface Definition Language).
 type IDL struct {
 	Version      string                 `json:"version"`
 	Name         string                 `json:"name"`
 	Address      string                 `json:"address"`
-	Metadata     IDLMetadata            `json:"metadata"`
+	Instructions []IdlInstruction       `json:"instructions"`
 	Accounts     []IdlAccountDefinition `json:"accounts"`
 	Types        []IdlTypeDefinition    `json:"types"`
-	Instructions []IdlInstruction       `json:"instructions"`
-	Events       []IdlEvent             `json:"events"`
 	Errors       []IdlError             `json:"errors"`
 }
 
-// IDLMetadata contains metadata about the IDL.
-type IDLMetadata struct {
-	Spec string `json:"spec"`
+// IdlInstruction represents a specific instruction definition within the program.
+type IdlInstruction struct {
+	Name          string       `json:"name"`
+	Docs          []string     `json:"docs"`
+	Discriminator []int        `json:"discriminator"`
+	Args          []IdlField   `json:"args"`
+	Accounts      []IdlAccount `json:"accounts"`
 }
 
-// IdlAccountDefinition represents an entry in the top-level "accounts" array of the IDL.
+// IdlAccountDefinition represents the definition of an account structure.
 type IdlAccountDefinition struct {
 	Name          string `json:"name"`
 	Discriminator []int  `json:"discriminator"`
 }
 
-// IdlTypeDefinition represents a user-defined type in the "types" array of the IDL.
+// IdlTypeDefinition represents user-defined types, which can be structs or enums.
 type IdlTypeDefinition struct {
 	Name string `json:"name"`
 	Type struct {
-		Kind   string     `json:"kind"`
-		Fields []IdlField `json:"fields"`
+		Kind     string       `json:"kind"` // "struct" or "enum"
+		Fields   []IdlField   `json:"fields,omitempty"`
+		Variants []IdlVariant `json:"variants,omitempty"`
 	} `json:"type"`
 }
 
-// IdlInstruction represents a single instruction in the IDL.
-type IdlInstruction struct {
-	Name     string       `json:"name"`
-	Args     []IdlField   `json:"args"`
-	Accounts []IdlAccount `json:"accounts"`
+// IdlVariant represents a specific variant within an Enum definition.
+type IdlVariant struct {
+	Name   string         `json:"name"`
+	Fields []IdlEnumField `json:"fields,omitempty"`
 }
 
-// IdlEvent represents an event in the IDL.
-type IdlEvent struct {
-	Name   string     `json:"name"`
-	Fields []IdlField `json:"fields"`
+// IdlEnumField represents a field within an Enum variant, supporting both named and unnamed fields.
+type IdlEnumField struct {
+	Name string
+	Type IdlType
 }
 
-// IdlError represents a custom program error.
-type IdlError struct {
-	Code    int    `json:"code"`
-	Name    string `json:"name"`
-	Message string `json:"msg"`
+// UnmarshalJSON handles custom deserialization for enum fields, supporting both named struct fields and tuple-style string types.
+func (ef *IdlEnumField) UnmarshalJSON(data []byte) error {
+	// Case 1: Primitive Type String (e.g., "bool", "u64") -> Tuple Enum
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		ef.Type = IdlType{Primitive: s}
+		return nil
+	}
+
+	// Case 2: Object
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+
+	// If it has "name" AND "type" properties, it is a Named Field (Struct Enum)
+	_, hasName := m["name"]
+	_, hasType := m["type"]
+	if hasName && hasType {
+		var f struct {
+			Name string  `json:"name"`
+			Type IdlType `json:"type"`
+		}
+		if err := json.Unmarshal(data, &f); err != nil {
+			return err
+		}
+		ef.Name = f.Name
+		ef.Type = f.Type
+		return nil
+	}
+
+	// If not (e.g., {"defined": "MyType"} or {"array": ...}), it is an Unnamed Field (Complex Tuple Enum)
+	var t IdlType
+	if err := json.Unmarshal(data, &t); err != nil {
+		return err
+	}
+	ef.Type = t
+	return nil
 }
 
-// IdlField represents a field in an instruction's args or a type's fields.
+// IdlField represents a standard field with a name and a type.
 type IdlField struct {
 	Name string  `json:"name"`
 	Type IdlType `json:"type"`
 }
 
-// IdlAccount represents an account in an instruction's "accounts" list.
+// IdlAccount represents an account used in an instruction, including its mutability and signer status.
 type IdlAccount struct {
 	Name       string `json:"name"`
 	IsWritable bool   `json:"writable"`
 	IsSigner   bool   `json:"signer"`
 }
 
-// IdlType represents all possible type variations.
-type IdlType struct {
-	Primitive string          `json:"-"`
-	Defined   *string         `json:"defined,omitempty"`
-	Array     *[2]interface{} `json:"array,omitempty"`
-	Vec       *interface{}    `json:"vec,omitempty"`
-	Option    *interface{}    `json:"option,omitempty"`
-	Coption   *interface{}    `json:"coption,omitempty"`
+// IdlError represents a custom error defined by the program.
+type IdlError struct {
+	Code    int    `json:"code"`
+	Name    string `json:"name"`
+	Message string `json:"msg"`
 }
 
-// UnmarshalJSON is a custom unmarshaler for IdlType.
+// IdlType represents the various possible data types in the IDL, including primitives and complex types.
+type IdlType struct {
+	Primitive string
+	Defined   *string
+	Array     *[2]interface{}
+	Vec       *interface{}
+	Option    *interface{}
+	Coption   *interface{}
+}
+
+// UnmarshalJSON handles custom deserialization for IDL types to support polymorphic type definitions.
 func (t *IdlType) UnmarshalJSON(data []byte) error {
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
@@ -105,6 +147,12 @@ func (t *IdlType) UnmarshalJSON(data []byte) error {
 		t.Defined = &defined
 		return nil
 	}
+	if definedObj, ok := obj["defined"].(map[string]interface{}); ok {
+		if name, ok := definedObj["name"].(string); ok {
+			t.Defined = &name
+			return nil
+		}
+	}
 	if array, ok := obj["array"].([]interface{}); ok && len(array) == 2 {
 		t.Array = &[2]interface{}{array[0], array[1]}
 		return nil
@@ -117,24 +165,19 @@ func (t *IdlType) UnmarshalJSON(data []byte) error {
 		t.Option = &option
 		return nil
 	}
-	if coption, ok := obj["coption"]; ok {
-		t.Coption = &coption
-		return nil
-	}
-	return fmt.Errorf("unknown IDL type structure: %s", string(data))
-}
-
-// Template functions
-var funcMap = template.FuncMap{
-	"toPascalCase":             toPascalCase,
-	"mapType":                  mapType,
-	"bytesLiteral":             bytesLiteral,
-	"accountDiscriminator":     accountDiscriminator,
-	"instructionDiscriminator": instructionDiscriminator,
-	"intSliceToBytesLiteral":   intSliceToBytesLiteral,
+	return nil
 }
 
 // --- Helper Functions ---
+
+// toPascalCase converts a snake_case or kebab-case string into PascalCase.
+func toPascalCase(s string) string {
+	s = strings.ReplaceAll(s, "_", " ")
+	s = strings.Title(s)
+	return strings.ReplaceAll(s, " ", "")
+}
+
+// intSliceToBytesLiteral converts a slice of integers into a Go byte slice literal string representation.
 func intSliceToBytesLiteral(nums []int) string {
 	if len(nums) == 0 {
 		return ""
@@ -146,48 +189,20 @@ func intSliceToBytesLiteral(nums []int) string {
 	return strings.Join(parts, ", ")
 }
 
-func toPascalCase(s string) string {
-	s = strings.ReplaceAll(s, "_", " ")
-	s = strings.ReplaceAll(s, "-", " ")
-	s = strings.Title(s)
-	return strings.ReplaceAll(s, " ", "")
+// manualDiscriminator calculates an 8-byte discriminator based on the sha256 hash of a prefix and name.
+func manualDiscriminator(prefix, name string) string {
+	h := sha256.Sum256([]byte(prefix + ":" + name))
+	return intSliceToBytesLiteral([]int{int(h[0]), int(h[1]), int(h[2]), int(h[3]), int(h[4]), int(h[5]), int(h[6]), int(h[7])})
 }
 
-func bytesLiteral(b []byte) string {
-	parts := make([]string, len(b))
-	for i, v := range b {
-		parts[i] = fmt.Sprintf("0x%02x", v)
-	}
-	return strings.Join(parts, ", ")
-}
-
-func accountDiscriminator(name string) []byte {
-	var result []rune
-	for i, r := range name {
-		if unicode.IsUpper(r) && i > 0 {
-			result = append(result, '_')
-		}
-		result = append(result, unicode.ToLower(r))
-	}
-	h := sha256.Sum256([]byte("account:" + string(result)))
-	return h[:8]
-}
-
-func instructionDiscriminator(name string) []byte {
-	h := sha256.Sum256([]byte("global:" + name))
-	return h[:8]
-}
-
+// mapType converts an IDL type definition into its corresponding Go type string representation.
 func mapType(t IdlType) string {
 	if t.Primitive != "" {
-		if t.Primitive == "pubkey" {
-			return "solana.PublicKey"
-		}
 		switch t.Primitive {
-		case "u8":
+		case "bool":
+			return "bool"
+		case "u8", "i8":
 			return "uint8"
-		case "i8":
-			return "int8"
 		case "u16":
 			return "uint16"
 		case "i16":
@@ -200,17 +215,13 @@ func mapType(t IdlType) string {
 			return "uint64"
 		case "i64":
 			return "int64"
-		case "u128":
+		case "u128", "i128":
 			return "*big.Int"
-		case "i128":
-			return "*big.Int"
-		case "bool":
-			return "bool"
-		case "string":
-			return "string"
 		case "bytes":
 			return "[]byte"
-		case "publicKey":
+		case "string":
+			return "string"
+		case "pubkey", "publicKey":
 			return "solana.PublicKey"
 		default:
 			return "interface{}"
@@ -219,280 +230,201 @@ func mapType(t IdlType) string {
 	if t.Defined != nil {
 		return toPascalCase(*t.Defined)
 	}
-	if t.Array != nil {
-		innerTypeBytes, _ := json.Marshal((*t.Array)[0])
-		var innerIdlType IdlType
-		_ = json.Unmarshal(innerTypeBytes, &innerIdlType)
-		size := (*t.Array)[1]
-		return fmt.Sprintf("[%d]%s", int(size.(float64)), mapType(innerIdlType))
+	if t.Option != nil {
+		innerBytes, _ := json.Marshal(*t.Option)
+		var inner IdlType
+		_ = json.Unmarshal(innerBytes, &inner)
+		return "*" + mapType(inner)
 	}
 	if t.Vec != nil {
-		innerTypeBytes, _ := json.Marshal(*t.Vec)
-		var innerIdlType IdlType
-		_ = json.Unmarshal(innerTypeBytes, &innerIdlType)
-		return fmt.Sprintf("[]%s", mapType(innerIdlType))
+		innerBytes, _ := json.Marshal(*t.Vec)
+		var inner IdlType
+		_ = json.Unmarshal(innerBytes, &inner)
+		return "[]" + mapType(inner)
 	}
-	if t.Option != nil || t.Coption != nil {
-		var inner interface{}
-		if t.Option != nil {
-			inner = *t.Option
-		} else {
-			inner = *t.Coption
-		}
-		innerTypeBytes, _ := json.Marshal(inner)
-		var innerIdlType IdlType
-		_ = json.Unmarshal(innerTypeBytes, &innerIdlType)
-		return fmt.Sprintf("*%s", mapType(innerIdlType))
+	if t.Array != nil {
+		innerBytes, _ := json.Marshal((*t.Array)[0])
+		var inner IdlType
+		_ = json.Unmarshal(innerBytes, &inner)
+		size := (*t.Array)[1]
+		return fmt.Sprintf("[%d]%s", int(size.(float64)), mapType(inner))
 	}
 	return "interface{}"
 }
 
-func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error {
+// --- Generator ---
 
+// Generate parses the provided IDL JSON file and generates a Go binding file using the specified configuration.
+func Generate(idlPath, outPath, pkgName, clientName *string, verbose bool) error {
 	if *idlPath == "" || *outPath == "" {
-		log.Fatal("Usage: idlgen -idl <path.json> -out <path.go> [-pkg <name>] [-client <name>]")
+		return fmt.Errorf("idl and out paths are required")
 	}
 
 	data, err := os.ReadFile(*idlPath)
 	if err != nil {
-		log.Fatalf("Failed to read IDL file: %v", err)
+		return err
 	}
 
 	var idl IDL
 	if err := json.Unmarshal(data, &idl); err != nil {
-		log.Fatalf("Failed to parse IDL: %v", err)
+		return fmt.Errorf("failed to parse IDL: %v", err)
 	}
 
 	if idl.Name == "" {
-		base := strings.TrimSuffix(filepath.Base(*idlPath), filepath.Ext(*idlPath))
-		idl.Name = base
+		idl.Name = "program"
 	}
 	if *clientName == "" {
 		*clientName = toPascalCase(idl.Name) + "Client"
 	}
 
-	typesMap := make(map[string]IdlTypeDefinition)
-	for _, t := range idl.Types {
-		typesMap[t.Name] = t
+	funcMap := template.FuncMap{
+		"toPascalCase":           toPascalCase,
+		"mapType":                mapType,
+		"intSliceToBytesLiteral": intSliceToBytesLiteral,
+		"manualDiscriminator":    manualDiscriminator,
 	}
 
-	tmpl := template.Must(template.New("idl").Funcs(funcMap).Parse(goTemplate))
+	tmpl, err := template.New("idl").Funcs(funcMap).Parse(goTemplate)
+	if err != nil {
+		return err
+	}
 
 	var buf bytes.Buffer
-	templateData := struct {
+	dataMap := struct {
 		PackageName string
 		ClientName  string
 		IDL         IDL
-		TypesMap    map[string]IdlTypeDefinition
 	}{
 		PackageName: *pkgName,
 		ClientName:  *clientName,
 		IDL:         idl,
-		TypesMap:    typesMap,
 	}
 
-	if err := tmpl.Execute(&buf, templateData); err != nil {
-		log.Fatalf("Template execution failed: %v", err)
+	if err := tmpl.Execute(&buf, dataMap); err != nil {
+		return err
 	}
 
+	// Try formatting code
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
-		log.Fatalf("Go format failed: %v\nRaw output:\n%s", err, buf.String())
+		// If formatting fails, write the raw file for debugging
+		if verbose {
+			log.Printf("Warning: Code format failed: %v. Writing unformatted code.", err)
+		}
+		return os.WriteFile(*outPath, buf.Bytes(), 0644)
 	}
 
-	outputDir := filepath.Dir(*outPath)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Fatalf("Failed to create output directory: %v", err)
-	}
-	if err := os.WriteFile(*outPath, formatted, 0644); err != nil {
-		log.Fatalf("Failed to write output: %v", err)
-	}
-	if verbose {
-		fmt.Printf("✅ Generated %s from %s\n", *outPath, *idlPath)
-	}
-
-	return nil
+	return os.WriteFile(*outPath, formatted, 0644)
 }
 
-// --- Go Template ---
+// --- Template ---
+
 const goTemplate = `// Code generated by idlgen. DO NOT EDIT.
-// Based on IDL: {{ .IDL.Name }}
+// Program: {{ .IDL.Name }}
 
 package {{ .PackageName }}
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math/big"
 
-	"github.com/gagliardetto/binary"
+	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
-{{ $prefix := .IDL.Name | toPascalCase -}}
+var ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
 
-// Program {{ $prefix }} address
-var {{ $prefix }}ProgramID = solana.MustPublicKeyFromBase58("{{ .IDL.Address }}")
-
-// --- Error Definitions ---
+// --- Errors ---
 {{- range .IDL.Errors }}
-// {{ $prefix }}{{ .Name | toPascalCase }}Error represents program error {{ .Code }}: {{ .Message }}
-var {{ $prefix }}{{ .Name | toPascalCase }}Error = errors.New("{{ .Message }}")
+var Err{{ .Name | toPascalCase }} = errors.New("{{ .Message }}")
 {{- end }}
 
-{{ $root := . -}}
-
-// --- Struct Definitions ---
+// --- Types ---
 {{- range .IDL.Types }}
 {{ $typeName := .Name | toPascalCase }}
-// {{ $prefix }}{{ $typeName }} represents the {{ .Name }} type.
-type {{ $prefix }}{{ $typeName }} struct {
+{{- if eq .Type.Kind "struct" }}
+type {{ $typeName }} struct {
 	{{- range .Type.Fields }}
-	{{ $fieldName := .Name | toPascalCase }}
-	{{ $fieldType := mapType .Type -}}
-	{{- if .Type.Defined -}}
-		{{ $fieldName }} {{ $prefix }}{{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
-	{{- else -}}
-		{{ $fieldName }} {{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
-	{{- end -}}
+	{{ .Name | toPascalCase }} {{ mapType .Type }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
 	{{- end }}
 }
+{{- else if eq .Type.Kind "enum" }}
+// Enum: {{ $typeName }}
+type {{ $typeName }} = bin.BorshEnum
+{{- end }}
 {{- end }}
 
-// --- Account-specific Functions ---
+// --- Accounts ---
 {{- range .IDL.Accounts }}
-{{ $accountName := .Name }}
-{{ $typeName := .Name | toPascalCase }}
+{{ $accName := .Name | toPascalCase }}
+var {{ $accName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "account" .Name }}{{ end }} }
 
-// {{ $prefix }}{{ $typeName }}Discriminator is the 8-byte discriminator for {{ .Name }} accounts.
-var {{ $prefix }}{{ $typeName }}Discriminator = []byte{
-{{- if .Discriminator }}
-{{ intSliceToBytesLiteral .Discriminator }},
-{{- else }}
-{{ accountDiscriminator .Name | bytesLiteral }},
+type {{ $accName }} struct {
+	// Fields are typically defined in Types with the same name.
+	// Decoding logic should be implemented manually using the Type definition.
+}
 {{- end }}
-}
 
-// Decode{{ $prefix }}{{ $typeName }} deserializes account data into a {{ $prefix }}{{ $typeName }} struct.
-func Decode{{ $prefix }}{{ $typeName }}(data []byte) (*{{ $prefix }}{{ $typeName }}, error) {
-	if len(data) < 8 {
-		return nil, fmt.Errorf("data too short for discriminator")
-	}
-	if !bytes.Equal(data[:8], {{ $prefix }}{{ $typeName }}Discriminator) {
-		return nil, fmt.Errorf("invalid discriminator for {{ $prefix }}{{ $typeName }}: got %v, want %v", data[:8], {{ $prefix }}{{ $typeName }}Discriminator)
-	}
-	var account {{ $prefix }}{{ $typeName }}
-	dec := bin.NewBorshDecoder(data[8:])
-	if err := dec.Decode(&account); err != nil {
-		return nil, fmt.Errorf("failed to decode {{ $prefix }}{{ $typeName }}: %w", err)
-	}
-	return &account, nil
-}
-
-// Serialize serializes the {{ $prefix }}{{ $typeName }} into a byte slice.
-func (a *{{ $prefix }}{{ $typeName }}) Serialize() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.Write({{ $prefix }}{{ $typeName }}Discriminator)
-	enc := bin.NewBorshEncoder(&buf)
-	if err := enc.Encode(a); err != nil {
-		return nil, fmt.Errorf("failed to encode {{ $prefix }}{{ $typeName }}: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-{{ end }}
-
-// --- Instruction Builders ---
+// --- Instructions ---
 {{- range .IDL.Instructions }}
 {{ $instrName := .Name | toPascalCase }}
-// {{ $prefix }}{{ $instrName }}InstructionDiscriminator is the 8-byte discriminator for the "{{ .Name }}" instruction.
-var {{ $prefix }}{{ $instrName }}InstructionDiscriminator = []byte{ {{ instructionDiscriminator .Name | bytesLiteral }} }
 
-// {{ $prefix }}{{ $instrName }}Args represents the arguments for the "{{ .Name }}" instruction.
-type {{ $prefix }}{{ $instrName }}Args struct {
+var {{ $instrName }}Discriminator = []byte{ {{ if .Discriminator }}{{ intSliceToBytesLiteral .Discriminator }}{{ else }}{{ manualDiscriminator "global" .Name }}{{ end }} }
+
+type {{ $instrName }}Args struct {
 	{{- range .Args }}
-	{{ $fieldName := .Name | toPascalCase }}
-	{{ $fieldType := mapType .Type -}}
-	{{- if .Type.Defined -}}
-		{{ $fieldName }} {{ $prefix }}{{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
-	{{- else -}}
-		{{ $fieldName }} {{ $fieldType }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
-	{{- end -}}
+	{{ .Name | toPascalCase }} {{ mapType .Type }} ` + "`" + `bin:"{{ .Name }}"` + "`" + `
 	{{- end }}
 }
 
-// {{ $prefix }}{{ $instrName }}Accounts represents the accounts for the "{{ .Name }}" instruction.
-type {{ $prefix }}{{ $instrName }}Accounts struct {
+type {{ $instrName }}Accounts struct {
 	{{- range .Accounts }}
 	{{ .Name | toPascalCase }} solana.PublicKey
 	{{- end }}
 }
 
-// New{{ $prefix }}{{ $instrName }}Instruction creates a new "{{ .Name }}" instruction.
-func New{{ $prefix }}{{ $instrName }}Instruction(
-	args {{ $prefix }}{{ $instrName }}Args,
-	accounts {{ $prefix }}{{ $instrName }}Accounts,
-) (solana.Instruction, error) {
-	// Serialize arguments.
-	var buf bytes.Buffer
-	buf.Write({{ $prefix }}{{ $instrName }}InstructionDiscriminator)
-	enc := bin.NewBorshEncoder(&buf)
-	if err := enc.Encode(args); err != nil {
-		return nil, fmt.Errorf("failed to encode instruction args: %w", err)
+func New{{ $instrName }}Instruction(
+	args {{ $instrName }}Args,
+	accounts {{ $instrName }}Accounts,
+) *solana.Instruction {
+	buf := new(bytes.Buffer)
+	buf.Write({{ $instrName }}Discriminator)
+	encoder := bin.NewBorshEncoder(buf)
+	if err := encoder.Encode(args); err != nil {
+		panic(fmt.Errorf("failed to encode args: %w", err))
 	}
 
-	// Build account metas.
-	accountMetas := []*solana.AccountMeta{
+	keys := []*solana.AccountMeta{
 		{{- range .Accounts }}
-		{PublicKey: accounts.{{ .Name | toPascalCase }}, IsWritable: {{ .IsWritable }}, IsSigner: {{ .IsSigner }}},
+		{
+			PublicKey: accounts.{{ .Name | toPascalCase }},
+			IsSigner:  {{ .IsSigner }},
+			IsWritable: {{ .IsWritable }},
+		},
 		{{- end }}
 	}
 
-	instruction := solana.NewInstruction(
-		{{ $prefix }}ProgramID,
-		accountMetas,
+	return solana.NewInstruction(
+		ProgramID,
+		keys,
 		buf.Bytes(),
 	)
-
-	return instruction, nil
-}
-{{ end }}
-
-// --- Program Client ---
-
-// {{ .ClientName }} is a client for interacting with the {{ .IDL.Name }} program.
-type {{ .ClientName }} struct {
-	Connection *rpc.Client
-	ProgramID  solana.PublicKey
-}
-
-// New{{ .ClientName }} creates a new client.
-func New{{ .ClientName }}(rpcEndpoint string, programID solana.PublicKey) *{{ .ClientName }} {
-	return &{{ .ClientName }}{
-		Connection: rpc.New(rpcEndpoint),
-		ProgramID:  programID,
-	}
-}
-
-// --- Client Methods ---
-{{- $clientName := .ClientName -}}
-{{- range .IDL.Instructions }}
-{{ $instrName := .Name | toPascalCase }}
-{{ $methodName := .Name | toPascalCase }}
-
-// {{ $methodName }} creates a transaction builder for the "{{ .Name }}" instruction.
-func (c *{{ $clientName }}) {{ $methodName }}(
-	args {{ $prefix }}{{ $instrName }}Args,
-	accounts {{ $prefix }}{{ $instrName }}Accounts,
-) *solana.TransactionBuilder {
-	// Create the instruction.
-	instruction, err := New{{ $prefix }}{{ $instrName }}Instruction(args, accounts)
-	if err != nil {
-		// This should never happen if the args are correct.
-		panic(err)
-	}
-	
-	return solana.NewTransactionBuilder().AddInstruction(instruction)
 }
 {{- end }}
+
+// --- Client ---
+
+type {{ .ClientName }} struct {
+	Rpc *rpc.Client
+}
+
+func New{{ .ClientName }}(endpoint string) *{{ .ClientName }} {
+	return &{{ .ClientName }}{
+		Rpc: rpc.New(endpoint),
+	}
+}
 `
